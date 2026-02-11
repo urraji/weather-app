@@ -1,0 +1,20 @@
+AWS-specific Helm notes
+
+1) Ingress uses AWS Load Balancer Controller (ALB). You must have:
+   - aws-load-balancer-controller installed
+   - IAM for ServiceAccount (IRSA) configured for the controller
+   - public subnets tagged for ALB (if internet-facing)
+
+2) TLS is provided by ACM on the ALB:
+   - Set .Values.ingress.certificateArn to your ACM cert ARN
+
+3) WAF:
+   - Optionally set .Values.ingress.wafAclArn to attach a WAF ACL
+
+4) Secrets:
+   - Pass OPENWEATHER_API_KEY via --set secrets.OPENWEATHER_API_KEY=...
+
+Example:
+helm upgrade --install weather charts/weather -n weather --create-namespace \
+  -f charts/weather/values-prod.yaml \
+  --set secrets.OPENWEATHER_API_KEY=YOUR_KEY

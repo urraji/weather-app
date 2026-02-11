@@ -1,0 +1,12 @@
+replicaCount: 1
+hpa:
+  enabled: false
+pdb:
+  enabled: false
+
+ingress:
+  enabled: false
+
+config:
+  RATE_LIMIT: "200/minute"
+  REDIS_URL: ""  # dev: memory cache

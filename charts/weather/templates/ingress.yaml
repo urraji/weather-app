@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "weather.fullname" . }}
+  labels:
+    app: {{ include "weather.name" . }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+    alb.ingress.kubernetes.io/scheme: {{ .Values.ingress.scheme | quote }}
+    alb.ingress.kubernetes.io/target-type: {{ .Values.ingress.targetType | quote }}
+    alb.ingress.kubernetes.io/listen-ports: {{ .Values.ingress.listenPorts | quote }}
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.ingress.healthcheckPath | quote }}
+    alb.ingress.kubernetes.io/success-codes: {{ .Values.ingress.successCodes | quote }}
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    {{- end }}
+    {{- if .Values.ingress.wafAclArn }}
+    alb.ingress.kubernetes.io/waf-acl-id: {{ .Values.ingress.wafAclArn | quote }}
+    {{- end }}
+    {{- if .Values.ingress.securityGroups }}
+    alb.ingress.kubernetes.io/security-groups: {{ .Values.ingress.securityGroups | quote }}
+    {{- end }}
+    {{- if .Values.ingress.subnets }}
+    alb.ingress.kubernetes.io/subnets: {{ .Values.ingress.subnets | quote }}
+    {{- end }}
+    {{- with .Values.ingress.additionalAnnotations }}
+{{ toYaml . | indent 4 }}
+    {{- end }}
+spec:
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "weather.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

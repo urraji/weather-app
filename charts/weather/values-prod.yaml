@@ -1,0 +1,17 @@
+replicaCount: 3
+hpa:
+  enabled: true
+pdb:
+  enabled: true
+
+ingress:
+  enabled: true
+  host: api.weather.example.com
+  scheme: internet-facing
+  targetType: ip
+  certificateArn: "REPLACE_ME_ACM_ARN"
+  # wafAclArn: "REPLACE_ME_WAF_ACL_ARN"
+
+config:
+  RATE_LIMIT: "50/minute"
+  REDIS_URL: "redis://redis.weather.svc.cluster.local:6379/0"

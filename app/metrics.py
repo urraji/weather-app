@@ -13,19 +13,13 @@ http_requests_total = Counter(
     ["path", "method", "status"],
 )
 
-# HTTP request latency histogram.
-# Used to compute:
-#   - p50 (median) latency → baseline performance
-#   - p95 latency → SLO target
-#   - p99 latency → tail amplification detection
-#
-# p50 helps detect general performance shifts.
-# p95/p99 detect user-impacting slowdowns.
+# HTTP request latency.
+# Used for p95/p99 latency SLO monitoring.
+# Key signal for user experience degradation.
 http_request_duration_seconds = Histogram(
     "http_request_duration_seconds",
     "HTTP request latency in seconds",
     ["path", "method"],
-    buckets=(0.01, 0.025, 0.05, 0.075, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0),
 )
 
 
@@ -83,13 +77,11 @@ openweather_requests_total = Counter(
     ["result"],  # ok | error | timeout | circuit_open
 )
 
-# Upstream latency histogram.
-# Used to compute p50/p95/p99 latency for dependency health.
-# Helps detect slow dependency before outright failures.
+# Upstream latency.
+# Critical for detecting dependency slowness before failures occur.
 openweather_request_duration_seconds = Histogram(
     "openweather_request_duration_seconds",
     "OpenWeather upstream latency in seconds",
-    buckets=(0.01, 0.025, 0.05, 0.075, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0),
 )
 
 # Circuit breaker open events.

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: weather
+description: Weather Alert Service (AWS EKS)
+type: application
+version: 0.2.0
+appVersion: "1.0.0"
