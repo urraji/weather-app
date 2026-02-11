@@ -1,0 +1,26 @@
+groups:
+- name: weather-alerts
+  rules:
+  - alert: UpstreamHighErrorRate
+    expr: rate(openweather_requests_total{result=~"error|timeout|circuit_open"}[5m]) > 0.2
+    for: 5m
+    labels:
+      severity: page
+    annotations:
+      summary: "High upstream error rate for OpenWeather"
+
+  - alert: HighP95Latency
+    expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+    for: 10m
+    labels:
+      severity: ticket
+    annotations:
+      summary: "p95 latency > 500ms"
+
+  - alert: ExcessiveStaleResponses
+    expr: rate(weather_stale_served_total[10m]) > 1
+    for: 10m
+    labels:
+      severity: ticket
+    annotations:
+      summary: "Serving stale data frequently"
