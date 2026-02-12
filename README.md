@@ -15,143 +15,177 @@ The service integrates with a third-party weather API, applies caching, and impl
 
 # Observability
 
-## Prometheus Metrics
+Observability is implemented at two levels:
 
-The service exposes the following core metrics:
+1. **Application-level metrics** (emitted by the service)
+2. **Platform-level metrics** (collected from Kubernetes and infrastructure)
 
-### 1. HTTP Request Metrics
+---
+
+# Application Metrics
+
+## HTTP Metrics
 
 **`http_requests_total` (Counter)**  
 Tracks total number of HTTP requests by endpoint and status code.
 
-**Why it matters:**  
-- Detect traffic spikes  
-- Calculate error rate  
-- Drive SLI/SLO availability measurements  
+Used for:
+- Traffic rate monitoring
+- Error rate calculation
+- Availability SLI measurement
 
 ---
 
 **`http_request_duration_seconds` (Histogram)**  
-Tracks request latency distribution.
+Tracks request latency distribution including p50, p90, p95, p99.
 
-Includes:
-- p50 (50th percentile)
-- p90
-- p95
-- p99
-
-**Why it matters:**  
-- Detect latency degradation  
-- Identify tail latency issues  
-- Validate performance SLOs  
-- Detect downstream dependency slowdowns  
+Used for:
+- Detecting latency regressions
+- Monitoring tail latency
+- Validating performance SLOs
 
 ---
 
-### 2. Upstream (Weather API) Metrics
+## Upstream Dependency Metrics
 
 **`upstream_requests_total` (Counter)**  
-Tracks calls to the third-party weather API.
-
-**Why it matters:**  
-- Detect dependency traffic volume  
-- Identify retry amplification  
-- Monitor external API usage rate  
-
----
+Tracks calls to the external weather API.
 
 **`upstream_request_duration_seconds` (Histogram)**  
-Measures latency of calls to the external weather provider.
-
-**Why it matters:**  
-- Detect external API slowness  
-- Trigger alerts when dependency latency increases  
-- Differentiate internal vs external latency  
-
----
+Measures latency of third-party API calls.
 
 **`upstream_errors_total` (Counter)**  
-Counts non-success responses from the external weather API.
+Counts non-success responses from the external API.
 
-**Why it matters:**  
-- Detect dependency outages  
-- Trigger circuit breaker logic  
-- Alert on error-rate SLO breaches  
+Used for:
+- Detecting dependency degradation
+- Triggering circuit breaker logic
+- Alerting on external failures
 
 ---
 
-### 3. Cache Metrics
+## Cache Metrics
 
 **`cache_hits_total` (Counter)**  
-Counts cache hits.
-
 **`cache_misses_total` (Counter)**  
-Counts cache misses.
 
-**Why they matter:**  
-- Calculate cache hit ratio  
-- Validate cache effectiveness  
-- Detect TTL misconfiguration  
-- Identify traffic patterns  
+Used to calculate cache hit ratio and validate TTL effectiveness.
 
 ---
 
-### 4. Rate Limiting Metrics
+## Rate Limiting Metrics
 
 **`rate_limited_requests_total` (Counter)**  
-Counts requests rejected due to rate limiting.
 
-**Why it matters:**  
-- Detect abuse or traffic bursts  
-- Validate protective throttling  
-- Protect upstream API from overload  
+Used to detect abusive traffic and validate protective throttling behavior.
+
+---
+
+# Platform-Level Metrics (Kubernetes & Infrastructure)
+
+These metrics are not implemented in application code. They are collected via:
+
+- kube-state-metrics
+- cAdvisor
+- node-exporter
+- Metrics Server
+- HPA controller
+
+---
+
+## Resource Utilization
+
+**CPU Usage**
+- `container_cpu_usage_seconds_total`
+
+Used to detect CPU saturation and scaling needs.
+
+**Memory Usage**
+- `container_memory_working_set_bytes`
+
+Used to detect memory pressure and OOM risk.
+
+**CPU Throttling**
+- `container_cpu_cfs_throttled_seconds_total`
+
+Used to identify latency caused by CPU limits being too restrictive.
+
+---
+
+## Pod Stability Signals
+
+**Pod Restarts**
+- `kube_pod_container_status_restarts_total`
+
+Used to detect crash loops, OOM kills, and probe misconfiguration.
+
+**OOM Events**
+- `kube_pod_container_status_last_terminated_reason`
+
+Used to identify memory exhaustion issues.
+
+---
+
+## Scaling Signals (HPA)
+
+If using CPU-based HPA:
+
+- `kube_horizontalpodautoscaler_status_current_replicas`
+- `kube_horizontalpodautoscaler_status_desired_replicas`
+
+Used to observe scaling behavior and verify autoscaling decisions.
+
+In production, scaling may also use:
+- Request rate
+- Latency thresholds
+- Custom metrics
+
+---
+
+## Edge & Ingress Metrics
+
+Collected from Ingress / Load Balancer / WAF layer:
+
+- Request rate
+- 4xx/5xx rates
+- Top client IP distribution (via logs, not Prometheus labels)
+
+High-cardinality dimensions like raw IP addresses are intentionally not emitted as application metrics.
 
 ---
 
 # Synthetic Monitoring
 
-Synthetic monitoring continuously validates service behavior from outside the system.
+Synthetic monitoring validates end-to-end system behavior from outside the cluster.
 
-## What is implemented
+Synthetic checks:
 
-A synthetic check periodically:
+1. Call `/weather/{known_city}`
+2. Validate status code
+3. Validate response structure
+4. Measure latency
 
-1. Calls `/weather/{known_city}`
-2. Validates response structure
-3. Ensures status code is 200
-4. Measures latency
+Synthetic monitoring detects:
 
-This can be deployed as:
-
-- A Kubernetes CronJob
-- An external uptime service
-- A lightweight monitoring container
-
----
-
-## What Synthetic Monitoring Detects
-
-Unlike metrics, synthetic checks validate:
-
-- End-to-end API functionality
-- DNS resolution issues
-- Ingress or ALB routing failures
+- DNS issues
+- Ingress or ALB misrouting
 - TLS certificate problems
-- Dependency failures
-- Authentication misconfiguration
+- Authentication failures
+- Third-party dependency outages
+- Full-path availability failures
 
-Metrics may show healthy pods while traffic fails at the edge. Synthetic monitoring detects those gaps.
+Unlike metrics, synthetic monitoring validates the complete request path from client to backend.
 
 ---
 
 # Reliability Patterns Implemented
 
-- Retry logic (only for transient upstream errors)
-- Timeout management for external calls
-- Circuit breaker behavior on repeated failures
-- Rate limiting to protect dependencies
-- Shared caching via Redis (or in-memory fallback)
-- Graceful shutdown support
+- Retry logic (transient upstream failures only)
+- Timeout management
+- Circuit breaker behavior
+- Rate limiting
+- Shared Redis caching (or in-memory fallback)
+- Graceful shutdown
 - Structured logging with correlation IDs
 
 ---
@@ -162,12 +196,12 @@ All configuration is externalized via environment variables.
 
 No credentials are hardcoded.
 
-Examples include:
+Examples:
 
 - `WEATHER_API_KEY`
 - `REDIS_URL`
 - `LOG_LEVEL`
-- Timeout and retry configuration
+- Retry and timeout settings
 - Cache TTL configuration
 
 ---
@@ -180,14 +214,12 @@ Raw Kubernetes manifests are included for quick inspection and validation.
 
 ---
 
-# Production Recommendations
+# Production Considerations
 
 - Use managed Redis (e.g., AWS ElastiCache Multi-AZ)
-- Use HPA for scaling
+- Define rolling update strategy (`maxUnavailable: 0`, `maxSurge: 1`)
 - Configure PodDisruptionBudget
-- Set rolling update strategy (`maxUnavailable: 0`, `maxSurge: 1`)
-- Enable OpenTelemetry tracing via Operator
+- Enable HPA
+- Use OpenTelemetry Operator for tracing
+- Monitor both application and platform-level metrics
 
----
-
-This service demonstrates correctness, reliability, and production-grade observability practices suitable for SRE review.
