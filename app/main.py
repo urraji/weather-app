@@ -3,6 +3,7 @@ import json
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, PlainTextResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from app.lifespan import lifespan
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -19,7 +20,7 @@ from app.weather import fetch_weather, UpstreamError, UpstreamTimeout, CircuitOp
 configure_logging()
 log = get_logger()
 
-app = FastAPI(title='Weather Alert Platform', version='1.0.0')
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(CorrelationAndMetricsMiddleware)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
@@ -29,6 +30,23 @@ app.state.limiter = limiter
 async def ratelimit_handler(request: Request, exc: RateLimitExceeded):
     rate_limited_requests_total.inc()
     return PlainTextResponse('rate limited', status_code=HTTP_429_TOO_MANY_REQUESTS)
+
+@app.get("/")
+async def root():
+    return {
+        "service": "weather-alert-service",
+        "endpoints": {
+            "weather": "/weather/{location}",
+            "health": "/health",
+            "metrics": "/metrics",
+            "docs": "/docs",
+        },
+    }
+
+@app.get("/favicon.ico")
+async def favicon():
+    # Browsers request /favicon.ico by default; return 204 to avoid noisy 404s.
+    return Response(status_code=204)
 
 def _age_seconds(cached_at: float) -> int:
     return max(0, int(time.time() - cached_at))
@@ -70,6 +88,8 @@ async def get_weather(location: str, request: Request):
 
 @app.get('/health')
 def health():
+    if getattr(app.state, 'shutting_down', False):
+        return Response(status_code=503, content='shutting_down')
     mode = 'redis' if settings.REDIS_URL else 'memory'
     return {'status': 'ok', 'cache_mode': mode}
 
