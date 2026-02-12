@@ -1,105 +1,67 @@
 from prometheus_client import Counter, Histogram
 
-# ================================
-# HTTP RED Metrics (Request Layer)
-# ================================
-
-# Total HTTP requests.
-# Used to calculate request rate and error rate.
-# Primary input for availability SLI.
-http_requests_total = Counter(
+# HTTP server metrics (RED)
+HTTP_REQUESTS_TOTAL = Counter(
     "http_requests_total",
     "Total HTTP requests",
-    ["path", "method", "status"],
+    ["method", "path", "status_code"],
 )
-
-# HTTP request latency.
-# Used for p95/p99 latency SLO monitoring.
-# Key signal for user experience degradation.
-http_request_duration_seconds = Histogram(
+HTTP_REQUEST_DURATION = Histogram(
     "http_request_duration_seconds",
-    "HTTP request latency in seconds",
-    ["path", "method"],
+    "HTTP request latency seconds (use histogram_quantile for p50/p95/p99)",
+    ["method", "path"],
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
 )
 
-
-# ===================================
-# Business-Level Metric (Weather API)
-# ===================================
-
-# Total weather endpoint requests.
-# Helps separate business traffic from health/metrics endpoints.
-weather_requests_total = Counter(
-    "weather_requests_total",
-    "Total weather requests",
+# Upstream dependency metrics
+UPSTREAM_REQUESTS_TOTAL = Counter(
+    "upstream_requests_total",
+    "Total upstream requests to weather provider",
+    ["provider", "status_class"],
+)
+UPSTREAM_REQUEST_DURATION = Histogram(
+    "upstream_request_duration_seconds",
+    "Upstream request latency seconds",
+    ["provider"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10),
+)
+UPSTREAM_ERRORS_TOTAL = Counter(
+    "upstream_errors_total",
+    "Total upstream errors (non-2xx)",
+    ["provider", "status_code"],
 )
 
-
-# ============================
-# Cache Effectiveness Metrics
-# ============================
-
-# Cache hits (redis or memory).
-# Used to monitor cache efficiency.
-# A drop in hit ratio may indicate upstream instability or TTL misconfiguration.
-weather_cache_hits_total = Counter(
-    "weather_cache_hits_total",
-    "Weather cache hits",
-    ["tier"],  # redis | memory
+# Cache metrics
+CACHE_HITS_TOTAL = Counter(
+    "cache_hits_total",
+    "Cache hits",
+    ["tier"],  # redis|memory
 )
-
-# Cache misses.
-# Combined with hits to calculate cache hit ratio.
-weather_cache_misses_total = Counter(
-    "weather_cache_misses_total",
-    "Weather cache misses",
-    ["tier"],  # redis | memory
+CACHE_MISSES_TOTAL = Counter(
+    "cache_misses_total",
+    "Cache misses",
+    ["tier"],
 )
-
-# Number of requests served using stale data.
-# High values may indicate upstream degradation.
-weather_stale_served_total = Counter(
+CACHE_ERRORS_TOTAL = Counter(
+    "cache_errors_total",
+    "Cache read/write errors",
+    ["tier", "op"],  # get|set
+)
+STALE_SERVED_TOTAL = Counter(
     "weather_stale_served_total",
-    "Requests served with stale cached data",
+    "Stale responses served due to upstream failure",
 )
 
-
-# ===============================
-# Upstream Dependency Monitoring
-# ===============================
-
-# Upstream request outcomes.
-# Tracks health of OpenWeather dependency.
-# Used to alert on error rate and circuit breaker activity.
-openweather_requests_total = Counter(
-    "openweather_requests_total",
-    "OpenWeather upstream requests",
-    ["result"],  # ok | error | timeout | circuit_open
-)
-
-# Upstream latency.
-# Critical for detecting dependency slowness before failures occur.
-openweather_request_duration_seconds = Histogram(
-    "openweather_request_duration_seconds",
-    "OpenWeather upstream latency in seconds",
-)
-
-# Circuit breaker open events.
-# Indicates sustained upstream instability.
-# Useful for paging when breaker opens frequently.
-openweather_circuit_open_total = Counter(
-    "openweather_circuit_open_total",
-    "Circuit breaker opened events",
-)
-
-
-# ======================
-# Protection / Throttle
-# ======================
-
-# Requests rejected due to rate limiting.
-# Detects abuse or unexpected traffic spikes.
-rate_limited_requests_total = Counter(
+# Rate limiting
+RATE_LIMITED_TOTAL = Counter(
     "rate_limited_requests_total",
-    "Requests rejected due to rate limiting",
+    "Requests rejected by rate limiting",
+    ["path"],
+)
+
+# Circuit breaker
+CIRCUIT_OPEN_TOTAL = Counter(
+    "upstream_circuit_open_total",
+    "Number of times upstream circuit is open when request attempted",
+    ["provider"],
 )

@@ -1,75 +1,72 @@
-from app.correlation import get_request_id
+from __future__ import annotations
+
+import time
+from typing import Any
+
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from app.config import settings
-from app.metrics import openweather_requests_total, openweather_request_duration_seconds
-from app.circuit import breaker
+from app.correlation import get_request_id
+from app.metrics import (
+    UPSTREAM_ERRORS_TOTAL,
+    UPSTREAM_REQUEST_DURATION,
+    UPSTREAM_REQUESTS_TOTAL,
+)
 
-class UpstreamError(Exception): ...
-class UpstreamTimeout(Exception): ...
-class CircuitOpen(Exception): ...
+
+class UpstreamError(Exception):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def _is_retryable_upstream_exception(exc: Exception) -> bool:
-    """Return True only for transient failures.
-
-    We retry on:
-      - network/transport errors
-      - timeouts
-      - upstream 5xx
-      - upstream 429 (rate limit) (optional; still bounded retries)
-
-    We do NOT retry on:
-      - 400/401/403/404 (client/config issues or not-found)
-    """
+    # Retry only transient failures
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
         return True
-    if isinstance(exc, UpstreamError) and getattr(exc, "status_code", None) is not None:
+    if isinstance(exc, UpstreamError) and exc.status_code is not None:
         return exc.status_code >= 500 or exc.status_code == 429
     return False
 
 
-
-def _to_result(payload: dict) -> dict:
-    return {
-        'temperature': float(payload['main']['temp']),
-        'humidity': int(payload['main']['humidity']),
-        'wind_speed': float(payload['wind']['speed']),
-        'conditions': str(payload['weather'][0]['description']),
-    }
-
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential_jitter(initial=0.2, max=1.5),
-    # retry policy patched
-    retry=retry_if_exception(_is_retryable_upstream_exception)),
+    stop=stop_after_attempt(settings.UPSTREAM_MAX_ATTEMPTS),
+    wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
+    retry=retry_if_exception(_is_retryable_upstream_exception),
+    reraise=True,
 )
-async def fetch_weather(location: str) -> dict:
-    if not breaker.allow():
-        openweather_requests_total.labels('circuit_open').inc()
-        raise CircuitOpen('circuit open')
+async def fetch_weather(http: httpx.AsyncClient, location: str) -> dict[str, Any]:
+    params = {
+        "q": location,
+        "appid": settings.OPENWEATHER_API_KEY,
+        "units": "metric",
+    }
+    headers = {}
+    rid = get_request_id()
+    if rid:
+        headers["X-Request-ID"] = rid
 
-    params = {'q': location, 'appid': settings.OPENWEATHER_API_KEY, 'units': 'metric'}
-    timeout = httpx.Timeout(settings.HTTP_TIMEOUT_SECONDS, connect=settings.HTTP_TIMEOUT_SECONDS)
+    start = time.time()
+    try:
+        r = await http.get(settings.OPENWEATHER_URL, params=params, headers=headers, timeout=settings.HTTP_TIMEOUT_SECONDS)
+    except Exception:
+        UPSTREAM_REQUESTS_TOTAL.labels("openweather", "exception").inc()
+        raise
+    finally:
+        UPSTREAM_REQUEST_DURATION.labels("openweather").observe(time.time() - start)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            with openweather_request_duration_seconds.time():
-                r = await client.get(settings.OPENWEATHER_URL, params=params)
-        except httpx.TimeoutException as e:
-            openweather_requests_total.labels('timeout').inc()
-            breaker.record_failure()
-            raise UpstreamTimeout(str(e))
-        except httpx.HTTPError as e:
-            openweather_requests_total.labels('error').inc()
-            breaker.record_failure()
-            raise UpstreamError(str(e))
+    status_class = f"{r.status_code // 100}xx"
+    UPSTREAM_REQUESTS_TOTAL.labels("openweather", status_class).inc()
 
     if r.status_code != 200:
-        openweather_requests_total.labels('error').inc()
-        breaker.record_failure()
-        raise UpstreamError(f'status={r.status_code}', status_code=r.status_code)
+        UPSTREAM_ERRORS_TOTAL.labels("openweather", str(r.status_code)).inc()
+        raise UpstreamError(f"status={r.status_code}", status_code=r.status_code)
 
-    breaker.record_success()
-    openweather_requests_total.labels('ok').inc()
-    return _to_result(r.json())
+    data = r.json()
+    return {
+        "temperature": data.get("main", {}).get("temp"),
+        "conditions": (data.get("weather") or [{}])[0].get("description"),
+        "humidity": data.get("main", {}).get("humidity"),
+        "wind_speed": data.get("wind", {}).get("speed"),
+    }

@@ -2,85 +2,52 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "weather.fullname" . }}
-  labels:
-    app: {{ include "weather.name" . }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  selector:
-    matchLabels:
-      app: {{ include "weather.name" . }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 1
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.rollingUpdate.maxSurge }}
+  selector:
+    matchLabels:
+      app: {{ include "weather.fullname" . }}
   template:
     metadata:
       labels:
-        app: {{ include "weather.name" . }}      annotations:
+        app: {{ include "weather.fullname" . }}
+      annotations:
         instrumentation.opentelemetry.io/inject-python: "true"
-
     spec:
-      serviceAccountName: {{ include "weather.serviceAccountName" . }}
       terminationGracePeriodSeconds: 30
-      podSecurityContext:
-{{ toYaml .Values.podSecurityContext | indent 8 }}
-      {{- if .Values.topologySpreadConstraints.enabled }}
-      topologySpreadConstraints:
-        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
-          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey }}
-          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
-          labelSelector:
-            matchLabels:
-              app: {{ include "weather.name" . }}
-      {{- end }}
-      {{- if .Values.podAntiAffinity.enabled }}
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    app: {{ include "weather.name" . }}
-      {{- else if .Values.affinity }}
-      affinity:
-{{ toYaml .Values.affinity | indent 8 }}
-      {{- end }}
-      nodeSelector:
-{{ toYaml .Values.nodeSelector | indent 8 }}
-      tolerations:
-{{ toYaml .Values.tolerations | indent 8 }}
       containers:
-        - name: weather
+        - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: {{ .Values.service.targetPort }}
-          securityContext:
-{{ toYaml .Values.securityContext | indent 12 }}
+            - containerPort: 8000
           envFrom:
             - configMapRef:
                 name: {{ include "weather.fullname" . }}-config
             - secretRef:
                 name: {{ include "weather.fullname" . }}-secrets
-          resources:
-            requests:
-              cpu: {{ .Values.resources.requests.cpu | quote }}
-              memory: {{ .Values.resources.requests.memory | quote }}
-            limits:
-              cpu: {{ .Values.resources.limits.cpu | quote }}
-              memory: {{ .Values.resources.limits.memory | quote }}
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: {{ .Values.service.targetPort }}
-            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           readinessProbe:
             httpGet:
               path: /health
-              port: {{ .Values.service.targetPort }}
-            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.readinessInitialDelaySeconds }}
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.livenessInitialDelaySeconds }}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]

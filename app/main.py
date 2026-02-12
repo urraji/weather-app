@@ -1,101 +1,115 @@
-import time
-import json
-from fastapi import FastAPI, HTTPException, Request
-from app.logging_utils import configure_logging
-from app.correlation import correlation_id_middleware
-from fastapi.responses import Response, PlainTextResponse
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from app.lifespan import lifespan
+from __future__ import annotations
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from starlette.status import HTTP_429_TOO_MANY_REQUESTS
+import time
+from fastapi import FastAPI, HTTPException, Response, Request
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.config import settings
-from app.logging import configure_logging, get_logger
-from app.middleware import CorrelationAndMetricsMiddleware
-from app.metrics import weather_requests_total, weather_stale_served_total, rate_limited_requests_total
-from app.cache import cache
-from app.weather import fetch_weather, UpstreamError, UpstreamTimeout, CircuitOpen
+from app.correlation import correlation_id_middleware
+from app.logging_utils import configure_logging, get_logger
+from app.lifespan import lifespan
+from app.metrics import HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION, RATE_LIMITED_TOTAL, STALE_SERVED_TOTAL, CIRCUIT_OPEN_TOTAL
+from app.rate_limit import _global_limiter
+from app.cache import CacheItem, serialize_item, deserialize_item
+from app.weather import fetch_weather, UpstreamError
 
 configure_logging()
-log = get_logger()
+log = get_logger(__name__)
 
 app = FastAPI(lifespan=lifespan)
-app.middleware(\"http\")(correlation_id_middleware)
-app.add_middleware(CorrelationAndMetricsMiddleware)
+app.middleware("http")(correlation_id_middleware)
 
-limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
-app.state.limiter = limiter
-
-@app.exception_handler(RateLimitExceeded)
-async def ratelimit_handler(request: Request, exc: RateLimitExceeded):
-    rate_limited_requests_total.inc()
-    return PlainTextResponse('rate limited', status_code=HTTP_429_TOO_MANY_REQUESTS)
 
 @app.get("/")
 async def root():
-    return {
-        "service": "weather-alert-service",
-        "endpoints": {
-            "weather": "/weather/{location}",
-            "health": "/health",
-            "metrics": "/metrics",
-            "docs": "/docs",
-        },
-    }
+    return {"service": "weather-alert-service"}
 
-@app.get("/favicon.ico")
-async def favicon():
-    # Browsers request /favicon.ico by default; return 204 to avoid noisy 404s.
-    return Response(status_code=204)
 
-def _age_seconds(cached_at: float) -> int:
-    return max(0, int(time.time() - cached_at))
+@app.get("/health")
+async def health(response: Response, request: Request):
+    st = request.app.state.state
+    if st.shutting_down.is_set():
+        response.status_code = 503
+        return {"status": "shutting_down"}
+    return {"status": "ok"}
 
-@app.get('/weather/{location}')
-@limiter.limit(settings.RATE_LIMIT)
-async def get_weather(location: str, request: Request):
-    weather_requests_total.inc()
 
-    key = f"weather:{location.strip().lower()}"
-    cached = cache.get(key)
-    if cached:
-        age = _age_seconds(cached.cached_at)
-        return {'location': location, **cached.value, 'source': 'cache', 'data_age_seconds': age}
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/weather/{location}")
+async def weather(location: str, request: Request):
+    # Simple per-process fixed window rate limit
+    if not _global_limiter.allow():
+        RATE_LIMITED_TOTAL.labels("/weather").inc()
+        raise HTTPException(status_code=429, detail="rate_limited")
+
+    st = request.app.state.state
 
     if not settings.OPENWEATHER_API_KEY:
-        raise HTTPException(status_code=500, detail='OPENWEATHER_API_KEY not configured')
+        raise HTTPException(status_code=500, detail="OPENWEATHER_API_KEY not set")
+
+    key = f"weather:{location.strip().lower()}"
+
+    cached = await st.cache.get(key)
+    if cached:
+        item = deserialize_item(cached)
+        age = time.time() - item.fetched_at
+        # Fresh enough: return immediately
+        if age <= settings.CACHE_TTL_SECONDS:
+            return item.payload
+        # Stale: we'll attempt refresh, but may serve stale on failure within MAX_STALE_SECONDS
+
+    # Circuit breaker
+    if st.breaker.is_open():
+        CIRCUIT_OPEN_TOTAL.labels("openweather").inc()
+        if cached:
+            item = deserialize_item(cached)
+            age = time.time() - item.fetched_at
+            if age <= settings.MAX_STALE_SECONDS:
+                STALE_SERVED_TOTAL.inc()
+                return item.payload
+        raise HTTPException(status_code=503, detail="upstream_circuit_open")
 
     try:
-        data = await fetch_weather(location)
-        cache.set(key, data, ttl_seconds=settings.CACHE_TTL_SECONDS)
-        return {'location': location, **data, 'source': 'api', 'data_age_seconds': 0}
-    except (CircuitOpen, UpstreamError, UpstreamTimeout) as e:
-        stale = cache.get(key)
-        if stale:
-            age = _age_seconds(stale.cached_at)
+        payload = await fetch_weather(st.http, location)
+        st.breaker.record_success()
+        await st.cache.set(key, serialize_item(CacheItem(payload=payload, fetched_at=time.time())), settings.CACHE_TTL_SECONDS)
+        return payload
+    except UpstreamError as e:
+        st.breaker.record_failure()
+        if cached:
+            item = deserialize_item(cached)
+            age = time.time() - item.fetched_at
             if age <= settings.MAX_STALE_SECONDS:
-                weather_stale_served_total.inc()
-                headers = {'X-Data-Freshness': 'stale', 'X-Data-Age-Seconds': str(age)}
-                return Response(
-                    content=json.dumps({'location': location, **stale.value, 'source': 'stale', 'data_age_seconds': age}),
-                    media_type='application/json',
-                    headers=headers,
-                    status_code=200,
-                )
+                STALE_SERVED_TOTAL.inc()
+                return item.payload
+        raise HTTPException(status_code=503, detail="upstream_error")
+    except Exception:
+        st.breaker.record_failure()
+        if cached:
+            item = deserialize_item(cached)
+            age = time.time() - item.fetched_at
+            if age <= settings.MAX_STALE_SECONDS:
+                STALE_SERVED_TOTAL.inc()
+                return item.payload
+        raise HTTPException(status_code=503, detail="upstream_unavailable")
 
-        log.warning('upstream_unavailable', location=location, err=str(e))
-        raise HTTPException(status_code=503, detail='upstream unavailable')
 
-@app.get('/health')
-def health():
-    if getattr(app.state, 'shutting_down', False):
-        return Response(status_code=503, content='shutting_down')
-    mode = 'redis' if settings.REDIS_URL else 'memory'
-    return {'status': 'ok', 'cache_mode': mode}
-
-@app.get('/metrics')
-def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+@app.middleware("http")
+async def prom_middleware(request: Request, call_next):
+    start = time.time()
+    path = request.url.path
+    method = request.method
+    try:
+        resp = await call_next(request)
+        status = str(resp.status_code)
+        return resp
+    finally:
+        dur = time.time() - start
+        # Avoid high-cardinality paths by bucketing dynamic path
+        metric_path = path if not path.startswith("/weather/") else "/weather/{location}"
+        HTTP_REQUESTS_TOTAL.labels(method, metric_path, status if 'status' in locals() else "500").inc()
+        HTTP_REQUEST_DURATION.labels(method, metric_path).observe(dur)

@@ -4,7 +4,6 @@ metadata:
   name: weather-api
   namespace: weather
 spec:
-  type: ClusterIP
   selector:
     app: weather-api
   ports:

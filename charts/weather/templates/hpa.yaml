@@ -2,9 +2,7 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "weather.fullname" . }}
-  labels:
-    app: {{ include "weather.name" . }}
+  name: {{ include "weather.fullname" . }}-hpa
 spec:
   scaleTargetRef:
     apiVersion: apps/v1

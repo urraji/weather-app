@@ -1,0 +1,7 @@
+route:
+  receiver: default
+
+receivers:
+  - name: default
+    # Example placeholder; integrate PagerDuty/Firehydrant as needed.
+    # pagerduty_configs: []

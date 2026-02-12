@@ -4,12 +4,8 @@ metadata:
   name: weather-config
   namespace: weather
 data:
-  OPENWEATHER_URL: "https://api.openweathermap.org/data/2.5/weather"
-  HTTP_TIMEOUT_SECONDS: "2.0"
+  LOG_LEVEL: INFO
   CACHE_TTL_SECONDS: "300"
   MAX_STALE_SECONDS: "1800"
-  RATE_LIMIT: "50/minute"
-  CIRCUIT_BREAKER_FAILS: "5"
-  CIRCUIT_BREAKER_WINDOW_SECONDS: "30"
-  CIRCUIT_BREAKER_OPEN_SECONDS: "30"
-  REDIS_URL: "redis://redis.weather.svc.cluster.local:6379/0"
+  HTTP_TIMEOUT_SECONDS: "2.0"
+  RATE_LIMIT: "50/60"

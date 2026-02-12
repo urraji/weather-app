@@ -1,48 +1,60 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Optional
+
 import httpx
+import redis.asyncio as redis
+from fastapi import FastAPI
 
-try:
-    # Redis is optional; only used when REDIS_URL is set
-    from redis.asyncio import Redis  # type: ignore
-except Exception:  # pragma: no cover
-    Redis = None  # type: ignore
-
+from app.cache import MemoryCache, RedisCache
 from app.config import settings
+from app.circuit import CircuitBreaker
+from app.logging_utils import get_logger
+
+log = get_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app):
-    """FastAPI lifespan hook to enable graceful shutdown.
+@dataclass
+class AppState:
+    http: httpx.AsyncClient
+    cache: Any
+    memory_cache: MemoryCache
+    redis_client: Optional[redis.Redis]
+    breaker: CircuitBreaker
+    shutting_down: asyncio.Event
 
-    Startup:
-      - Create shared httpx.AsyncClient (reused across requests)
-      - Optionally create shared Redis client
-      - Initialize shutdown flag
 
-    Shutdown:
-      - Flip shutdown flag so readiness fails fast
-      - Close httpx and redis connections cleanly
-    """
-    app.state.shutting_down = False
-    app.state.http = httpx.AsyncClient(timeout=settings.HTTP_TIMEOUT_SECONDS)
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    shutting_down = asyncio.Event()
+    http = httpx.AsyncClient()
+    memory_cache = MemoryCache()
+    breaker = CircuitBreaker()
 
-    if settings.REDIS_URL and Redis is not None:
-        app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    else:
-        app.state.redis = None
-
-    try:
-        yield
-    finally:
-        app.state.shutting_down = True
+    redis_client = None
+    cache = memory_cache
+    if settings.REDIS_URL:
         try:
-            await app.state.http.aclose()
+            redis_client = redis.from_url(settings.REDIS_URL, encoding=None, decode_responses=False)
+            await redis_client.ping()
+            cache = RedisCache(redis_client)
+            log.info("redis_connected")
         except Exception:
-            pass
-        if getattr(app.state, "redis", None):
-            try:
-                await app.state.redis.aclose()
-            except Exception:
-                pass
+            log.warning("redis_unavailable_falling_back_to_memory")
+            redis_client = None
+            cache = memory_cache
+
+    app.state.state = AppState(
+        http=http,
+        cache=cache,
+        memory_cache=memory_cache,
+        redis_client=redis_client,
+        breaker=breaker,
+        shutting_down=shutting_down,
+    )
+    yield
+    shutting_down.set()
+    await http.aclose()
+    if redis_client is not None:
+        await redis_client.aclose()

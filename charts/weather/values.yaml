@@ -1,107 +1,42 @@
-# Default values (safe defaults). Override with values-dev.yaml / values-prod.yaml.
+replicaCount: 2
 
 image:
-  repository: weather-api
+  repository: weather-alert-service
   tag: latest
   pullPolicy: IfNotPresent
 
-replicaCount: 3
-
-service:
-  port: 80
-  targetPort: 8000
-  type: ClusterIP
-
-serviceAccount:
-  create: true
-  name: ""
-  annotations: {}
-  # For IRSA:
-  # annotations:
-  #   eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>
-
-ingress:
-  enabled: false
-  # Use AWS Load Balancer Controller (ALB) by default when enabled.
-  className: alb
-  host: api.weather.example.com
-  scheme: internet-facing         # or internal
-  targetType: ip                  # recommended for EKS
-  listenPorts: '[{"HTTPS":443}]'
-  certificateArn: ""              # ACM cert ARN (required for HTTPS on ALB)
-  wafAclArn: ""                   # optional: attach WAF ACL to ALB
-  securityGroups: ""              # optional: ALB SGs (comma-separated)
-  subnets: ""                     # optional: ALB subnets (comma-separated)
-  healthcheckPath: /health
-  successCodes: "200"
-  tlsSecretName: ""               # Not used by ALB; kept for non-ALB ingress compatibility
-  additionalAnnotations: {}
-
-config:
-  OPENWEATHER_URL: "https://api.openweathermap.org/data/2.5/weather"
-  HTTP_TIMEOUT_SECONDS: "2.0"
-  CACHE_TTL_SECONDS: "300"
-  MAX_STALE_SECONDS: "1800"
-  RATE_LIMIT: "50/minute"
-  CIRCUIT_BREAKER_FAILS: "5"
-  CIRCUIT_BREAKER_WINDOW_SECONDS: "30"
-  CIRCUIT_BREAKER_OPEN_SECONDS: "30"
-  REDIS_URL: ""
-
-# Secrets options:
-# 1) simplest: pass OPENWEATHER_API_KEY via --set secrets.OPENWEATHER_API_KEY=...
-# 2) recommended (AWS): use External Secrets Operator + Secrets Manager (enable externalSecrets)
-secrets:
-  OPENWEATHER_API_KEY: ""
-
-
 resources:
   requests:
-    cpu: 200m
-    memory: 256Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 256Mi
+
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
 
 probes:
-  liveness:
-    initialDelaySeconds: 30
-    periodSeconds: 10
-  readiness:
-    initialDelaySeconds: 10
-    periodSeconds: 5
-
-pdb:
-  enabled: true
-  minAvailable: 2
+  readinessInitialDelaySeconds: 5
+  livenessInitialDelaySeconds: 10
 
 hpa:
   enabled: true
-  minReplicas: 3
-  maxReplicas: 20
-  targetCPUUtilizationPercentage: 60
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
 
-# Scheduling/HA polish (Principal-level, optional)
-topologySpreadConstraints:
+pdb:
   enabled: true
-  maxSkew: 1
-  topologyKey: topology.kubernetes.io/zone
-  whenUnsatisfiable: ScheduleAnyway
+  minAvailable: 1
 
-podAntiAffinity:
-  enabled: true
+config:
+  LOG_LEVEL: INFO
+  CACHE_TTL_SECONDS: "300"
+  MAX_STALE_SECONDS: "1800"
+  HTTP_TIMEOUT_SECONDS: "2.0"
+  RATE_LIMIT: "50/60"
 
-nodeSelector: {}
-tolerations: []
-affinity: {}
-
-podSecurityContext:
-  runAsNonRoot: true
-  seccompProfile:
-    type: RuntimeDefault
-
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: ["ALL"]
+secrets:
+  OPENWEATHER_API_KEY: "REPLACE_ME"
