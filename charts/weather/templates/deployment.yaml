@@ -17,7 +17,9 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ include "weather.name" . }}
+        app: {{ include "weather.name" . }}      annotations:
+        instrumentation.opentelemetry.io/inject-python: "true"
+
     spec:
       serviceAccountName: {{ include "weather.serviceAccountName" . }}
       terminationGracePeriodSeconds: 30

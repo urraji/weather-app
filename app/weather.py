@@ -1,3 +1,4 @@
+from app.correlation import get_request_id
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 
@@ -8,6 +9,26 @@ from app.circuit import breaker
 class UpstreamError(Exception): ...
 class UpstreamTimeout(Exception): ...
 class CircuitOpen(Exception): ...
+
+def _is_retryable_upstream_exception(exc: Exception) -> bool:
+    """Return True only for transient failures.
+
+    We retry on:
+      - network/transport errors
+      - timeouts
+      - upstream 5xx
+      - upstream 429 (rate limit) (optional; still bounded retries)
+
+    We do NOT retry on:
+      - 400/401/403/404 (client/config issues or not-found)
+    """
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, UpstreamError) and getattr(exc, "status_code", None) is not None:
+        return exc.status_code >= 500 or exc.status_code == 429
+    return False
+
+
 
 def _to_result(payload: dict) -> dict:
     return {
@@ -20,7 +41,8 @@ def _to_result(payload: dict) -> dict:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential_jitter(initial=0.2, max=1.5),
-    retry=retry_if_exception_type((UpstreamError, UpstreamTimeout)),
+    # retry policy patched
+    retry=retry_if_exception(_is_retryable_upstream_exception)),
 )
 async def fetch_weather(location: str) -> dict:
     if not breaker.allow():
@@ -46,7 +68,7 @@ async def fetch_weather(location: str) -> dict:
     if r.status_code != 200:
         openweather_requests_total.labels('error').inc()
         breaker.record_failure()
-        raise UpstreamError(f'status={r.status_code}')
+        raise UpstreamError(f'status={r.status_code}', status_code=r.status_code)
 
     breaker.record_success()
     openweather_requests_total.labels('ok').inc()

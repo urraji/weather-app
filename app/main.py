@@ -1,6 +1,8 @@
 import time
 import json
 from fastapi import FastAPI, HTTPException, Request
+from app.logging_utils import configure_logging
+from app.correlation import correlation_id_middleware
 from fastapi.responses import Response, PlainTextResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from app.lifespan import lifespan
@@ -21,6 +23,7 @@ configure_logging()
 log = get_logger()
 
 app = FastAPI(lifespan=lifespan)
+app.middleware(\"http\")(correlation_id_middleware)
 app.add_middleware(CorrelationAndMetricsMiddleware)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])

@@ -1,0 +1,37 @@
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-gateway
+  namespace: observability
+spec:
+  mode: deployment
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 512
+      batch:
+
+    exporters:
+      # For now: log spans so you can validate end-to-end tracing quickly.
+      logging:
+        loglevel: info
+
+      # Optional: forward to any OTLP backend later (Tempo/Jaeger/etc.).
+      # otlp:
+      #   endpoint: tempo-distributor.observability.svc.cluster.local:4317
+      #   tls:
+      #     insecure: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [logging]
